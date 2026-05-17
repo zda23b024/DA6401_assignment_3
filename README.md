@@ -65,3 +65,8 @@ best checkpoint/BLEU score, use:
 ```bash
 python train.py --experiment baseline --epochs 15
 ```
+## W&B Experiment Report
+
+Detailed experiment results, plots, and analysis can be found here:
+
+[DA6401 Assignment 3 - Transformer Machine Translation on Multi30k](https://wandb.ai/zda23m016-iit-madras-zanzibar/da6401-a3/reports/DA6401-Assignment-3-Transformer-Machine-Translation-on-Multi30k--VmlldzoxNjkxMjE4Nw?accessToken=ktyjch8p5zoliatnmssa9cf2xeomiqtis33p1h8y4j25gybjkwapsgldr5g5tu2f)
