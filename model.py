@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 DEFAULT_CHECKPOINT_PATH = os.environ.get("TRANSFORMER_CHECKPOINT_PATH", "checkpoint.pt")
 DEFAULT_CHECKPOINT_URL = os.environ.get("TRANSFORMER_CHECKPOINT_URL", "")
-DEFAULT_CHECKPOINT_ID = os.environ.get("TRANSFORMER_CHECKPOINT_ID", "")
+DEFAULT_CHECKPOINT_ID = os.environ.get("TRANSFORMER_CHECKPOINT_ID", "1qSPHJ04vLqQMU-DBEefPPI563RdY59-Z")
 
 
 class _LoadedVocab:
