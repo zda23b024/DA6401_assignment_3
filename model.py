@@ -235,7 +235,10 @@ class Transformer(nn.Module):
     ) -> None:
         super().__init__()
         checkpoint = None
-        if checkpoint_path is not None:
+        if checkpoint_path is None and os.path.exists("checkpoint.pt"):
+            checkpoint_path = "checkpoint.pt"
+
+        if checkpoint_path is not None and os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
             model_config = checkpoint.get("model_config", {})
             src_vocab_size = model_config.get("src_vocab_size", src_vocab_size)
