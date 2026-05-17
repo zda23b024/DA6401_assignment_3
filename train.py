@@ -300,8 +300,6 @@ def evaluate_bleu(
             hypotheses.append(_tokens_from_ids(pred.squeeze(0).tolist(), tgt_vocab))
 
     return float(_corpus_bleu(references, hypotheses))
-
-
 def save_checkpoint(
     model: Transformer,
     optimizer: torch.optim.Optimizer,
@@ -433,10 +431,15 @@ def run_training_experiment() -> None:
                 "best_val_bleu": best_val_bleu,
             }
         )
+        print(
+            f"Epoch {epoch+1}/{cfg.num_epochs}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, val_bleu={val_bleu:.2f}, best_val_bleu={best_val_bleu:.2f}",
+            flush=True,
+        )
 
     load_checkpoint("best_checkpoint.pt", model)
     bleu = evaluate_bleu(model, test_loader, train_dataset.tgt_vocab, device)
     wandb.log({"test_bleu": bleu})
+    print(f"Final test BLEU: {bleu:.2f}", flush=True)
     run.finish()
 
 
