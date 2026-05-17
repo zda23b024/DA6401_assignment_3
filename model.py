@@ -234,11 +234,8 @@ class Transformer(nn.Module):
         checkpoint_path: str = None,
     ) -> None:
         super().__init__()
-        if checkpoint_path is None and os.path.exists("checkpoint.pt"):
-            checkpoint_path = "checkpoint.pt"
-
         checkpoint = None
-        if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        if checkpoint_path is not None:
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
             model_config = checkpoint.get("model_config", {})
             src_vocab_size = model_config.get("src_vocab_size", src_vocab_size)
@@ -274,6 +271,13 @@ class Transformer(nn.Module):
         }
         self._reset_parameters()
 
+        try:
+            import spacy
+
+            self.src_tokenizer = spacy.blank("de")
+        except Exception:
+            self.src_tokenizer = lambda text: [type("Token", (), {"text": token}) for token in text.split()]
+
         if checkpoint is not None:
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             self.load_state_dict(state_dict)
@@ -281,12 +285,6 @@ class Transformer(nn.Module):
                 self.src_vocab = _LoadedVocab(checkpoint["src_vocab_itos"])
             if "tgt_vocab_itos" in checkpoint:
                 self.tgt_vocab = _LoadedVocab(checkpoint["tgt_vocab_itos"])
-            try:
-                import spacy
-
-                self.src_tokenizer = spacy.blank("de")
-            except Exception:
-                self.src_tokenizer = lambda text: [type("Token", (), {"text": token}) for token in text.split()]
 
     def _reset_parameters(self) -> None:
         for param in self.parameters():
