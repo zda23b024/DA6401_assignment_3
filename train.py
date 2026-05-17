@@ -219,6 +219,8 @@ def save_checkpoint(
     """
     Save model + optimizer + scheduler state to disk.
     """
+    src_vocab_itos = getattr(getattr(model, "src_vocab", None), "itos", None)
+    tgt_vocab_itos = getattr(getattr(model, "tgt_vocab", None), "itos", None)
     torch.save(
         {
             "epoch": epoch,
@@ -226,6 +228,8 @@ def save_checkpoint(
             "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
             "model_config": getattr(model, "model_config", {}),
+            "src_vocab_itos": src_vocab_itos,
+            "tgt_vocab_itos": tgt_vocab_itos,
         },
         path,
     )
@@ -242,6 +246,14 @@ def load_checkpoint(
     """
     checkpoint = torch.load(path, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"])
+    if checkpoint.get("src_vocab_itos") is not None:
+        from model import _LoadedVocab
+
+        model.src_vocab = _LoadedVocab(checkpoint["src_vocab_itos"])
+    if checkpoint.get("tgt_vocab_itos") is not None:
+        from model import _LoadedVocab
+
+        model.tgt_vocab = _LoadedVocab(checkpoint["tgt_vocab_itos"])
     if optimizer is not None and checkpoint.get("optimizer_state_dict") is not None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:

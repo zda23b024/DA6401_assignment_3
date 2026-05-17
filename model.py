@@ -15,6 +15,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class _LoadedVocab:
+    def __init__(self, itos: list[str]) -> None:
+        self.itos = itos
+        self.stoi = {token: idx for idx, token in enumerate(itos)}
+
+    def lookup_token(self, idx: int) -> str:
+        return self.itos[idx]
+
+
 def scaled_dot_product_attention(
     Q: torch.Tensor,
     K: torch.Tensor,
@@ -225,6 +234,21 @@ class Transformer(nn.Module):
         checkpoint_path: str = None,
     ) -> None:
         super().__init__()
+        if checkpoint_path is None and os.path.exists("checkpoint.pt"):
+            checkpoint_path = "checkpoint.pt"
+
+        checkpoint = None
+        if checkpoint_path is not None and os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            model_config = checkpoint.get("model_config", {})
+            src_vocab_size = model_config.get("src_vocab_size", src_vocab_size)
+            tgt_vocab_size = model_config.get("tgt_vocab_size", tgt_vocab_size)
+            d_model = model_config.get("d_model", d_model)
+            N = model_config.get("N", N)
+            num_heads = model_config.get("num_heads", num_heads)
+            d_ff = model_config.get("d_ff", d_ff)
+            dropout = model_config.get("dropout", dropout)
+
         self.src_vocab_size = src_vocab_size
         self.tgt_vocab_size = tgt_vocab_size
         self.d_model = d_model
@@ -250,10 +274,19 @@ class Transformer(nn.Module):
         }
         self._reset_parameters()
 
-        if checkpoint_path is not None and os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        if checkpoint is not None:
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             self.load_state_dict(state_dict)
+            if "src_vocab_itos" in checkpoint:
+                self.src_vocab = _LoadedVocab(checkpoint["src_vocab_itos"])
+            if "tgt_vocab_itos" in checkpoint:
+                self.tgt_vocab = _LoadedVocab(checkpoint["tgt_vocab_itos"])
+            try:
+                import spacy
+
+                self.src_tokenizer = spacy.blank("de")
+            except Exception:
+                self.src_tokenizer = lambda text: [type("Token", (), {"text": token}) for token in text.split()]
 
     def _reset_parameters(self) -> None:
         for param in self.parameters():
@@ -304,6 +337,8 @@ class Transformer(nn.Module):
         sos_idx = src_stoi.get("<sos>", 2)
         eos_idx = src_stoi.get("<eos>", 3)
         tokens = [tok.text.lower() for tok in self.src_tokenizer(src_sentence)]
+        if not tokens:
+            tokens = re.findall(r"[\wäöüß-]+", src_sentence.lower(), flags=re.IGNORECASE)
         src_ids = [sos_idx] + [src_stoi.get(token, unk_idx) for token in tokens] + [eos_idx]
         src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
         src_mask = make_src_mask(src)
