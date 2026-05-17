@@ -255,21 +255,6 @@ def evaluate_bleu(
     references = []
     hypotheses = []
 
-    raw_examples = list(getattr(getattr(test_dataloader, "dataset", None), "raw_data", []) or [])
-    raw_index = 0
-    if raw_examples and hasattr(model, "_normalize_memory_key"):
-        memory = getattr(model.__class__, "_translation_memory", None) or {}
-        for example in raw_examples:
-            if "de" in example and "en" in example:
-                src_text, tgt_text = example["de"], example["en"]
-            elif "translation" in example:
-                translation = example["translation"]
-                src_text, tgt_text = translation["de"], translation["en"]
-            else:
-                continue
-            memory[model._normalize_memory_key(src_text)] = tgt_text.lower()
-        model.__class__._translation_memory = memory
-
     model.eval()
     for src, tgt in test_dataloader:
         src = src.to(device)
@@ -278,15 +263,6 @@ def evaluate_bleu(
             src_i = src[i : i + 1]
             tgt_i = tgt[i].tolist()
             references.append(_tokens_from_ids(tgt_i, tgt_vocab))
-
-            # Force raw_hypothesis to None so it skips the rule-based lookup!
-            raw_hypothesis = None 
-            raw_index += 1
-            
-            # Keep the rest of the code that follows...
-            src_mask = make_src_mask(src_i)
-            if beam_size > 1:
-            
             src_mask = make_src_mask(src_i)
             if beam_size > 1:
                 pred = beam_search_decode(
