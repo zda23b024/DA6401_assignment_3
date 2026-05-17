@@ -22,3 +22,15 @@ assignment3/
 - `lr_scheduler.py`: Noam warmup plus inverse-square-root decay.
 - `train.py`: label smoothing, epoch loop, greedy/beam decoding, BLEU evaluation, checkpoint save/load, and a W&B-ready training entry point.
 - `dataset.py`: Multi30k loading and spaCy-based tokenization/vocabulary building.
+
+## Gradescope Inference
+
+`Transformer()` can be constructed with no arguments and exposes `infer(german_sentence)`.
+For final submission, make the trained checkpoint available during construction by either:
+
+- placing `checkpoint.pt` beside `model.py`, or
+- setting `TRANSFORMER_CHECKPOINT_URL` to a public downloadable checkpoint URL, or
+- setting `TRANSFORMER_CHECKPOINT_ID` to a public Google Drive file id.
+
+The checkpoint should include `model_state_dict`, `model_config`, `src_vocab_itos`, and
+`tgt_vocab_itos`; `train.py::save_checkpoint` already saves this format.

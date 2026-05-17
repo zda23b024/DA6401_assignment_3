@@ -15,6 +15,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+DEFAULT_CHECKPOINT_PATH = os.environ.get("TRANSFORMER_CHECKPOINT_PATH", "checkpoint.pt")
+DEFAULT_CHECKPOINT_URL = os.environ.get("TRANSFORMER_CHECKPOINT_URL", "")
+DEFAULT_CHECKPOINT_ID = os.environ.get("TRANSFORMER_CHECKPOINT_ID", "")
+
+
 class _LoadedVocab:
     def __init__(self, itos: list[str]) -> None:
         self.itos = itos
@@ -22,6 +27,47 @@ class _LoadedVocab:
 
     def lookup_token(self, idx: int) -> str:
         return self.itos[idx]
+
+
+def _load_spacy_tokenizer():
+    try:
+        import spacy
+
+        return spacy.blank("de")
+    except Exception:
+        return lambda text: [type("Token", (), {"text": token}) for token in text.split()]
+
+
+def _download_checkpoint_if_needed(checkpoint_path: str) -> None:
+    """
+    Download the trained checkpoint during Transformer construction.
+
+    For submission, set TRANSFORMER_CHECKPOINT_URL to a public Google Drive
+    or direct-download URL, or set TRANSFORMER_CHECKPOINT_ID to a Drive file id.
+    """
+    if os.path.exists(checkpoint_path):
+        return
+    if not DEFAULT_CHECKPOINT_URL and not DEFAULT_CHECKPOINT_ID:
+        return
+
+    try:
+        import gdown
+
+        if DEFAULT_CHECKPOINT_ID:
+            gdown.download(id=DEFAULT_CHECKPOINT_ID, output=checkpoint_path, quiet=True)
+        else:
+            gdown.download(DEFAULT_CHECKPOINT_URL, checkpoint_path, quiet=True, fuzzy=True)
+        return
+    except Exception:
+        if DEFAULT_CHECKPOINT_ID:
+            return
+
+    try:
+        from urllib.request import urlretrieve
+
+        urlretrieve(DEFAULT_CHECKPOINT_URL, checkpoint_path)
+    except Exception:
+        return
 
 
 def scaled_dot_product_attention(
@@ -235,8 +281,9 @@ class Transformer(nn.Module):
     ) -> None:
         super().__init__()
         checkpoint = None
-        if checkpoint_path is None and os.path.exists("checkpoint.pt"):
-            checkpoint_path = "checkpoint.pt"
+        if checkpoint_path is None:
+            checkpoint_path = DEFAULT_CHECKPOINT_PATH
+        _download_checkpoint_if_needed(checkpoint_path)
 
         if checkpoint_path is not None and os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -273,13 +320,7 @@ class Transformer(nn.Module):
             "dropout": dropout,
         }
         self._reset_parameters()
-
-        try:
-            import spacy
-
-            self.src_tokenizer = spacy.blank("de")
-        except Exception:
-            self.src_tokenizer = lambda text: [type("Token", (), {"text": token}) for token in text.split()]
+        self.src_tokenizer = _load_spacy_tokenizer()
 
         if checkpoint is not None:
             state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -342,7 +383,7 @@ class Transformer(nn.Module):
         tgt_eos_idx = tgt_stoi.get("<eos>", 3)
         tokens = [tok.text.lower() for tok in self.src_tokenizer(src_sentence)]
         if not tokens:
-            tokens = re.findall(r"[\wäöüß-]+", src_sentence.lower(), flags=re.IGNORECASE)
+            tokens = re.findall(r"[\w\u00e4\u00f6\u00fc\u00df-]+", src_sentence.lower(), flags=re.IGNORECASE)
         src_ids = [src_sos_idx] + [src_stoi.get(token, unk_idx) for token in tokens] + [src_eos_idx]
         src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
         src_mask = make_src_mask(src)
@@ -426,7 +467,12 @@ class Transformer(nn.Module):
         """
         def normalize_german(text: str) -> str:
             text = text.lower()
-            text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+            text = (
+                text.replace("\u00e4", "ae")
+                .replace("\u00f6", "oe")
+                .replace("\u00fc", "ue")
+                .replace("\u00df", "ss")
+            )
             text = re.sub(r"[^\w-]+", " ", text, flags=re.IGNORECASE)
             return re.sub(r"\s+", " ", text).strip()
 
