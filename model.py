@@ -368,10 +368,10 @@ class Transformer(nn.Module):
         """
         Translate a German sentence to English using attached vocab/tokenizer attributes.
         """
-
-        memory_translation = self._translation_memory_infer(src_sentence)
-        if memory_translation is not None:
-            return memory_translation
+        # COMMENT OUT OR REMOVE THESE 3 LINES:
+        # memory_translation = self._translation_memory_infer(src_sentence)
+        # if memory_translation is not None:
+        #     return memory_translation
             
         if not all(hasattr(self, name) for name in ("src_vocab", "tgt_vocab", "src_tokenizer")):
             return self._rule_based_infer(src_sentence)
