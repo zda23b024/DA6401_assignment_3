@@ -9,3 +9,4 @@ __pycache__/
 *.tmp.pth
 wandb/
 _report_images/
+report_text.txt
