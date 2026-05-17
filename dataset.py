@@ -42,7 +42,7 @@ def _load_spacy_model(name: str, lang: str):
 
 
 class Multi30kDataset(torch.utils.data.Dataset):
-    def __init__(self, split="train", src_vocab: Vocab | None = None, tgt_vocab: Vocab | None = None, min_freq: int = 2):
+    def __init__(self, split="train", src_vocab: Vocab | None = None, tgt_vocab: Vocab | None = None, min_freq: int = 1):
         """
         Loads the Multi30k dataset and prepares German/English tokenizers.
         """
