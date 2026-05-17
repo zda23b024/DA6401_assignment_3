@@ -395,7 +395,7 @@ def run_training_experiment() -> None:
 
     config = {
         "batch_size": 32,
-        "num_epochs": 40,
+        "num_epochs": 80,
         "d_model": 512,
         "N": 6,
         "num_heads": 8,
@@ -404,7 +404,7 @@ def run_training_experiment() -> None:
         "warmup_steps": 4000,
         "lr": 1.0,
         "smoothing": 0.1,
-        "val_bleu_beam_size": 5,
+        "val_bleu_beam_size": 8,
     }
     run = wandb.init(project="da6401-a3", config=config, mode=os.environ.get("WANDB_MODE", "disabled"))
     cfg = run.config
