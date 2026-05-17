@@ -136,7 +136,7 @@ def beam_search_decode(
     start_symbol: int,
     end_symbol: int,
     device: str = "cpu",
-    beam_size: int = 5,
+    beam_size: int = 8,
     length_norm_alpha: float = 0.6,
     min_len: int = 3,
     unk_symbol: Optional[int] = None,
@@ -294,7 +294,7 @@ def evaluate_bleu(
     tgt_vocab,
     device: str = "cpu",
     max_len: int = 100,
-    beam_size: int = 5,
+    beam_size: int = 8,
     length_norm_alpha: float = 0.6,
     min_len: int = 3,
 ) -> float:

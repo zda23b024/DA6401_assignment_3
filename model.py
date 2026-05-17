@@ -349,7 +349,7 @@ class Transformer(nn.Module):
         def _beam_search(src_tensor: torch.Tensor, src_mask_tensor: torch.Tensor) -> torch.Tensor:
             memory = self.encode(src_tensor, src_mask_tensor)
             beam = [([tgt_sos_idx], 0.0, False)]
-            beam_size = 5
+            beam_size = 8
             alpha = 0.6
             min_len = 3
 
