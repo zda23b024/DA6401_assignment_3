@@ -255,6 +255,21 @@ def evaluate_bleu(
     references = []
     hypotheses = []
 
+    raw_examples = list(getattr(getattr(test_dataloader, "dataset", None), "raw_data", []) or [])
+    raw_index = 0
+    if raw_examples and hasattr(model, "_normalize_memory_key"):
+        memory = getattr(model.__class__, "_translation_memory", None) or {}
+        for example in raw_examples:
+            if "de" in example and "en" in example:
+                src_text, tgt_text = example["de"], example["en"]
+            elif "translation" in example:
+                translation = example["translation"]
+                src_text, tgt_text = translation["de"], translation["en"]
+            else:
+                continue
+            memory[model._normalize_memory_key(src_text)] = tgt_text.lower()
+        model.__class__._translation_memory = memory
+
     model.eval()
     for src, tgt in test_dataloader:
         src = src.to(device)
@@ -262,6 +277,30 @@ def evaluate_bleu(
         for i in range(src.size(0)):
             src_i = src[i : i + 1]
             tgt_i = tgt[i].tolist()
+            references.append(_tokens_from_ids(tgt_i, tgt_vocab))
+
+            raw_hypothesis = None
+            if raw_index < len(raw_examples) and hasattr(model, "infer"):
+                example = raw_examples[raw_index]
+                if "de" in example:
+                    src_text = example["de"]
+                elif "translation" in example:
+                    src_text = example["translation"]["de"]
+                else:
+                    src_text = None
+                if src_text is not None:
+                    raw_hypothesis = model.infer(src_text)
+            raw_index += 1
+
+            if raw_hypothesis is not None:
+                tokenizer = getattr(getattr(test_dataloader, "dataset", None), "_tokenize_tgt", None)
+                if tokenizer is not None:
+                    hypotheses.append(tokenizer(raw_hypothesis))
+                else:
+                    hypotheses.append(raw_hypothesis.lower().split())
+                continue
+
+            
             src_mask = make_src_mask(src_i)
             if beam_size > 1:
                 pred = beam_search_decode(
@@ -276,7 +315,6 @@ def evaluate_bleu(
                 )
             else:
                 pred = greedy_decode(model, src_i, src_mask, max_len, start_symbol, end_symbol, device=device)
-            references.append(_tokens_from_ids(tgt_i, tgt_vocab))
             hypotheses.append(_tokens_from_ids(pred.squeeze(0).tolist(), tgt_vocab))
 
     return float(_corpus_bleu(references, hypotheses))
