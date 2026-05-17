@@ -8,3 +8,4 @@ __pycache__/
 *.tmp.pt
 *.tmp.pth
 wandb/
+_report_images/
