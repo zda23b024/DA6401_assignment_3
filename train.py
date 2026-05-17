@@ -371,7 +371,7 @@ def run_training_experiment() -> None:
         "warmup_steps": 4000,
         "lr": 1.0,
         "smoothing": 0.1,
-        "val_bleu_beam_size": 1,
+        "val_bleu_beam_size": 5,
     }
     run = wandb.init(project="da6401-a3", config=config, mode=os.environ.get("WANDB_MODE", "disabled"))
     cfg = run.config
@@ -437,7 +437,7 @@ def run_training_experiment() -> None:
         )
 
     load_checkpoint("best_checkpoint.pt", model)
-    bleu = evaluate_bleu(model, test_loader, train_dataset.tgt_vocab, device)
+    bleu = evaluate_bleu(model, test_loader, train_dataset.tgt_vocab, device, beam_size=cfg.val_bleu_beam_size)
     wandb.log({"test_bleu": bleu})
     print(f"Final test BLEU: {bleu:.2f}", flush=True)
     run.finish()
