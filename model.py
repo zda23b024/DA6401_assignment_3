@@ -333,27 +333,58 @@ class Transformer(nn.Module):
 
         device = next(self.parameters()).device
         src_stoi = getattr(self.src_vocab, "stoi", self.src_vocab)
+        tgt_stoi = getattr(self.tgt_vocab, "stoi", self.tgt_vocab)
         unk_idx = src_stoi.get("<unk>", 0)
-        sos_idx = src_stoi.get("<sos>", 2)
-        eos_idx = src_stoi.get("<eos>", 3)
+        src_sos_idx = src_stoi.get("<sos>", 2)
+        src_eos_idx = src_stoi.get("<eos>", 3)
+        tgt_sos_idx = tgt_stoi.get("<sos>", 2)
+        tgt_eos_idx = tgt_stoi.get("<eos>", 3)
         tokens = [tok.text.lower() for tok in self.src_tokenizer(src_sentence)]
         if not tokens:
             tokens = re.findall(r"[\wäöüß-]+", src_sentence.lower(), flags=re.IGNORECASE)
-        src_ids = [sos_idx] + [src_stoi.get(token, unk_idx) for token in tokens] + [eos_idx]
+        src_ids = [src_sos_idx] + [src_stoi.get(token, unk_idx) for token in tokens] + [src_eos_idx]
         src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
         src_mask = make_src_mask(src)
 
-        ys = torch.tensor([[sos_idx]], dtype=torch.long, device=device)
+        def _beam_search(src_tensor: torch.Tensor, src_mask_tensor: torch.Tensor) -> torch.Tensor:
+            memory = self.encode(src_tensor, src_mask_tensor)
+            beam = [([tgt_sos_idx], 0.0, False)]
+            beam_size = 5
+            alpha = 0.7
+            for _ in range(100):
+                candidates = []
+                for seq, score, finished in beam:
+                    if finished:
+                        candidates.append((seq, score, True))
+                        continue
+                    ys = torch.tensor([seq], dtype=torch.long, device=device)
+                    tgt_mask = make_tgt_mask(ys)
+                    logits = self.decode(memory, src_mask_tensor, ys, tgt_mask)
+                    log_probs = F.log_softmax(logits[:, -1, :], dim=-1).squeeze(0)
+                    topk_log_probs, topk_indices = log_probs.topk(min(beam_size, log_probs.size(-1)))
+                    for log_prob, idx in zip(topk_log_probs.tolist(), topk_indices.tolist()):
+                        new_seq = seq + [idx]
+                        candidates.append((new_seq, score + log_prob, idx == tgt_eos_idx))
+
+                if not candidates:
+                    break
+
+                def score_with_length_norm(item):
+                    seq, score, finished = item
+                    length = len(seq)
+                    norm = ((5.0 + length) / 6.0) ** alpha
+                    return score / norm
+
+                beam = sorted(candidates, key=score_with_length_norm, reverse=True)[:beam_size]
+                if all(finished for _, _, finished in beam):
+                    break
+
+            best_seq = max(beam, key=score_with_length_norm)[0]
+            return torch.tensor([best_seq], dtype=torch.long, device=device)
+
         self.eval()
         with torch.no_grad():
-            memory = self.encode(src, src_mask)
-            for _ in range(100):
-                tgt_mask = make_tgt_mask(ys)
-                logits = self.decode(memory, src_mask, ys, tgt_mask)
-                next_word = int(torch.argmax(logits[:, -1, :], dim=-1).item())
-                ys = torch.cat([ys, torch.tensor([[next_word]], dtype=torch.long, device=device)], dim=1)
-                if next_word == eos_idx:
-                    break
+            ys = _beam_search(src, src_mask)
 
         out_tokens = []
         for idx in ys.squeeze(0).tolist():

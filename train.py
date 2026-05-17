@@ -128,9 +128,69 @@ def greedy_decode(
     return ys
 
 
+def beam_search_decode(
+    model: Transformer,
+    src: torch.Tensor,
+    src_mask: torch.Tensor,
+    max_len: int,
+    start_symbol: int,
+    end_symbol: int,
+    device: str = "cpu",
+    beam_size: int = 5,
+    length_norm_alpha: float = 0.7,
+) -> torch.Tensor:
+    """
+    Generate a translation using beam search to improve BLEU quality.
+    """
+    model.eval()
+    src = src.to(device)
+    src_mask = src_mask.to(device)
+    with torch.no_grad():
+        memory = model.encode(src, src_mask)
+
+        beam = [([start_symbol], 0.0, False)]
+        for _ in range(max_len - 1):
+            candidates = []
+            for seq, score, finished in beam:
+                if finished:
+                    candidates.append((seq, score, True))
+                    continue
+
+                ys = torch.tensor([seq], dtype=torch.long, device=device)
+                tgt_mask = make_tgt_mask(ys).to(device)
+                logits = model.decode(memory, src_mask, ys, tgt_mask)
+                log_probs = F.log_softmax(logits[:, -1, :], dim=-1).squeeze(0)
+                topk_log_probs, topk_indices = log_probs.topk(min(beam_size, log_probs.size(-1)))
+
+                for log_prob, idx in zip(topk_log_probs.tolist(), topk_indices.tolist()):
+                    new_seq = seq + [idx]
+                    new_score = score + log_prob
+                    candidates.append((new_seq, new_score, idx == end_symbol))
+
+            if not candidates:
+                break
+
+            def score_with_length_norm(item):
+                seq, score, finished = item
+                length = len(seq)
+                norm = ((5.0 + length) / 6.0) ** length_norm_alpha
+                return score / norm
+
+            beam = sorted(candidates, key=score_with_length_norm, reverse=True)[:beam_size]
+            if all(finished for _, _, finished in beam):
+                break
+
+        completed_beams = [item for item in beam if item[2]]
+        best_seq = max(completed_beams or beam, key=score_with_length_norm)[0]
+
+    return torch.tensor([best_seq], dtype=torch.long, device=device)
+
+
 def _lookup_token(vocab, idx: int) -> str:
     if hasattr(vocab, "lookup_token"):
         return vocab.lookup_token(idx)
+    if hasattr(vocab, "itos"):
+        return vocab.itos[idx]
     if hasattr(vocab, "itos"):
         return vocab.itos[idx]
     raise TypeError("tgt_vocab must support lookup_token(idx) or have an itos list")
@@ -185,6 +245,7 @@ def evaluate_bleu(
     tgt_vocab,
     device: str = "cpu",
     max_len: int = 100,
+    beam_size: int = 5,
 ) -> float:
     """
     Evaluate translation quality with corpus-level BLEU score.
@@ -202,7 +263,19 @@ def evaluate_bleu(
             src_i = src[i : i + 1]
             tgt_i = tgt[i].tolist()
             src_mask = make_src_mask(src_i)
-            pred = greedy_decode(model, src_i, src_mask, max_len, start_symbol, end_symbol, device=device)
+            if beam_size > 1:
+                pred = beam_search_decode(
+                    model,
+                    src_i,
+                    src_mask,
+                    max_len,
+                    start_symbol,
+                    end_symbol,
+                    device=device,
+                    beam_size=beam_size,
+                )
+            else:
+                pred = greedy_decode(model, src_i, src_mask, max_len, start_symbol, end_symbol, device=device)
             references.append(_tokens_from_ids(tgt_i, tgt_vocab))
             hypotheses.append(_tokens_from_ids(pred.squeeze(0).tolist(), tgt_vocab))
 
@@ -271,7 +344,7 @@ def run_training_experiment() -> None:
 
     config = {
         "batch_size": 32,
-        "num_epochs": 10,
+        "num_epochs": 20,
         "d_model": 512,
         "N": 6,
         "num_heads": 8,
