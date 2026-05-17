@@ -26,6 +26,8 @@ EXPERIMENT_CONFIGS = {
     "no_smoothing": {"smoothing": 0.0},
 }
 
+ALL_EXPERIMENTS = ["baseline", "fixed_lr", "no_scale", "learned_pos", "no_smoothing"]
+
 
 class LabelSmoothingLoss(nn.Module):
     """
@@ -451,9 +453,10 @@ def load_checkpoint(
     return int(checkpoint.get("epoch", 0))
 
 
-def _build_config(args: argparse.Namespace) -> dict:
+def _build_config(args: argparse.Namespace, experiment_name: Optional[str] = None) -> dict:
+    experiment_name = experiment_name or args.experiment
     config = {
-        "experiment_name": args.experiment,
+        "experiment_name": experiment_name,
         "batch_size": 64,
         "num_epochs": args.epochs,
         "d_model": 256,
@@ -472,7 +475,7 @@ def _build_config(args: argparse.Namespace) -> dict:
         "log_prediction_confidence": True,
         "log_attention_maps": True,
     }
-    config.update(EXPERIMENT_CONFIGS[args.experiment])
+    config.update(EXPERIMENT_CONFIGS[experiment_name])
     if args.epochs is not None:
         config["num_epochs"] = args.epochs
     return config
@@ -482,11 +485,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Transformer experiments for DA6401 Assignment 3.")
     parser.add_argument(
         "--experiment",
-        choices=sorted(EXPERIMENT_CONFIGS.keys()),
+        choices=sorted(EXPERIMENT_CONFIGS.keys()) + ["all"],
         default="baseline",
-        help="W&B experiment/ablation to run.",
+        help="W&B experiment/ablation to run. Use 'all' to run every report experiment.",
     )
-    parser.add_argument("--epochs", type=int, default=15, help="Epochs for this experiment run.")
+    parser.add_argument("--epochs", type=int, default=10, help="Epochs for this experiment run.")
     parser.add_argument("--project", type=str, default="da6401-a3", help="W&B project name.")
     return parser.parse_args()
 
@@ -539,22 +542,27 @@ def log_attention_heatmaps(model: Transformer, dataset, device: str, wandb_run, 
     plt.close(fig)
 
 
-def run_training_experiment() -> None:
+def run_training_experiment(experiment_name: str, args: argparse.Namespace) -> None:
     """
     Set up and run the full training experiment.
     """
-    args = _parse_args()
-
     import wandb
     from dataset import Multi30kDataset
     from lr_scheduler import NoamScheduler
 
-    config = _build_config(args)
+    os.environ.pop("WANDB_DISABLED", None)
+    os.environ.setdefault("WANDB_MODE", "online")
+    config = _build_config(args, experiment_name)
     run = wandb.init(
         project=args.project,
         name=config["experiment_name"],
         config=config,
-        mode=os.environ.get("WANDB_MODE", "disabled"),
+        mode="online",
+        reinit=True,
+    )
+    print(
+        f"W&B logging online: project={args.project}, run={config['experiment_name']}, url={run.url}",
+        flush=True,
     )
     cfg = run.config
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -661,4 +669,7 @@ def run_training_experiment() -> None:
 
 
 if __name__ == "__main__":
-    run_training_experiment()
+    parsed_args = _parse_args()
+    experiments = ALL_EXPERIMENTS if parsed_args.experiment == "all" else [parsed_args.experiment]
+    for experiment in experiments:
+        run_training_experiment(experiment, parsed_args)

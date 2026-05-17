@@ -37,14 +37,31 @@ The checkpoint should include `model_state_dict`, `model_config`, `src_vocab_ito
 
 ## W&B Experiments
 
-Run the same training entry point with different experiment names:
+Log in to W&B first:
+
+```bash
+wandb login
+```
+
+Run all report experiments with the default 10 epochs:
+
+```bash
+python train.py --experiment all
+```
+
+Or run the same training entry point with individual experiment names:
+
+```bash
+python train.py --experiment baseline
+python train.py --experiment fixed_lr
+python train.py --experiment no_scale
+python train.py --experiment learned_pos
+python train.py --experiment no_smoothing
+```
+
+W&B online logging is enabled by default. To run the final baseline longer for the
+best checkpoint/BLEU score, use:
 
 ```bash
 python train.py --experiment baseline --epochs 15
-python train.py --experiment fixed_lr --epochs 15
-python train.py --experiment no_scale --epochs 15
-python train.py --experiment learned_pos --epochs 15
-python train.py --experiment no_smoothing --epochs 15
 ```
-
-Set `WANDB_MODE=online` before running to log report plots.
