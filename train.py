@@ -139,8 +139,8 @@ def beam_search_decode(
     beam_size: int = 5,
     length_norm_alpha: float = 0.7,
     min_len: int = 2,
-    unk_symbol: int = 0,
-    pad_symbol: int = 1,
+    unk_symbol: Optional[int] = None,
+    pad_symbol: Optional[int] = None,
 ) -> torch.Tensor:
     """
     Generate a translation using beam search to improve BLEU quality.
@@ -150,6 +150,35 @@ def beam_search_decode(
     src_mask = src_mask.to(device)
     with torch.no_grad():
         memory = model.encode(src, src_mask)
+
+        # Derive unk/pad indices from attached vocab if not provided
+        if unk_symbol is None:
+            try:
+                tgt_vocab = getattr(model, "tgt_vocab", None)
+                if tgt_vocab is None:
+                    unk_symbol = 0
+                elif hasattr(tgt_vocab, "stoi"):
+                    unk_symbol = tgt_vocab.stoi.get("<unk>", 0)
+                elif isinstance(tgt_vocab, dict):
+                    unk_symbol = tgt_vocab.get("<unk>", 0)
+                else:
+                    unk_symbol = 0
+            except Exception:
+                unk_symbol = 0
+
+        if pad_symbol is None:
+            try:
+                tgt_vocab = getattr(model, "tgt_vocab", None)
+                if tgt_vocab is None:
+                    pad_symbol = 1
+                elif hasattr(tgt_vocab, "stoi"):
+                    pad_symbol = tgt_vocab.stoi.get("<pad>", 1)
+                elif isinstance(tgt_vocab, dict):
+                    pad_symbol = tgt_vocab.get("<pad>", 1)
+                else:
+                    pad_symbol = 1
+            except Exception:
+                pad_symbol = 1
 
         beam = [([start_symbol], 0.0, False)]
 
