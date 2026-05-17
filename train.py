@@ -279,27 +279,13 @@ def evaluate_bleu(
             tgt_i = tgt[i].tolist()
             references.append(_tokens_from_ids(tgt_i, tgt_vocab))
 
-            raw_hypothesis = None
-            if raw_index < len(raw_examples) and hasattr(model, "infer"):
-                example = raw_examples[raw_index]
-                if "de" in example:
-                    src_text = example["de"]
-                elif "translation" in example:
-                    src_text = example["translation"]["de"]
-                else:
-                    src_text = None
-                if src_text is not None:
-                    raw_hypothesis = model.infer(src_text)
+            # Force raw_hypothesis to None so it skips the rule-based lookup!
+            raw_hypothesis = None 
             raw_index += 1
-
-            if raw_hypothesis is not None:
-                tokenizer = getattr(getattr(test_dataloader, "dataset", None), "_tokenize_tgt", None)
-                if tokenizer is not None:
-                    hypotheses.append(tokenizer(raw_hypothesis))
-                else:
-                    hypotheses.append(raw_hypothesis.lower().split())
-                continue
-
+            
+            # Keep the rest of the code that follows...
+            src_mask = make_src_mask(src_i)
+            if beam_size > 1:
             
             src_mask = make_src_mask(src_i)
             if beam_size > 1:
