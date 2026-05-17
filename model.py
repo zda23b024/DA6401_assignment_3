@@ -75,6 +75,7 @@ def scaled_dot_product_attention(
     K: torch.Tensor,
     V: torch.Tensor,
     mask: Optional[torch.Tensor] = None,
+    use_scaling: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V.
@@ -82,7 +83,9 @@ def scaled_dot_product_attention(
     mask must be broadcastable to (..., seq_q, seq_k). True entries are masked.
     """
     d_k = Q.size(-1)
-    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+    scores = torch.matmul(Q, K.transpose(-2, -1))
+    if use_scaling:
+        scores = scores / math.sqrt(d_k)
     if mask is not None:
         scores = scores.masked_fill(mask.to(dtype=torch.bool), torch.finfo(scores.dtype).min)
     attn_w = F.softmax(scores, dim=-1)
@@ -115,7 +118,7 @@ def make_tgt_mask(
 class MultiHeadAttention(nn.Module):
     """Multi-head attention implemented from first principles."""
 
-    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1) -> None:
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1, use_scaling: bool = True) -> None:
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
 
@@ -127,6 +130,7 @@ class MultiHeadAttention(nn.Module):
         self.w_v = nn.Linear(d_model, d_model)
         self.w_o = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
+        self.use_scaling = use_scaling
         self.attn_weights: Optional[torch.Tensor] = None
 
     def forward(
@@ -145,7 +149,7 @@ class MultiHeadAttention(nn.Module):
         k = split_heads(self.w_k(key))
         v = split_heads(self.w_v(value))
 
-        attn_out, attn_w = scaled_dot_product_attention(q, k, v, mask)
+        attn_out, attn_w = scaled_dot_product_attention(q, k, v, mask, use_scaling=self.use_scaling)
         self.attn_weights = attn_w
         attn_out = self.dropout(attn_out)
         attn_out = attn_out.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
@@ -169,6 +173,19 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x + self.pe[:, : x.size(1)].to(dtype=x.dtype))
 
 
+class LearnedPositionalEncoding(nn.Module):
+    """Learned positional embeddings for the positional-encoding ablation."""
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000) -> None:
+        super().__init__()
+        self.position_embed = nn.Embedding(max_len, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
+        return self.dropout(x + self.position_embed(positions))
+
+
 class PositionwiseFeedForward(nn.Module):
     """Position-wise feed-forward network."""
 
@@ -185,9 +202,16 @@ class PositionwiseFeedForward(nn.Module):
 class EncoderLayer(nn.Module):
     """One Transformer encoder layer."""
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        dropout: float = 0.1,
+        use_attention_scaling: bool = True,
+    ) -> None:
         super().__init__()
-        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout, use_scaling=use_attention_scaling)
         self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -204,10 +228,17 @@ class EncoderLayer(nn.Module):
 class DecoderLayer(nn.Module):
     """One Transformer decoder layer."""
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        dropout: float = 0.1,
+        use_attention_scaling: bool = True,
+    ) -> None:
         super().__init__()
-        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
-        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout, use_scaling=use_attention_scaling)
+        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout, use_scaling=use_attention_scaling)
         self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -278,12 +309,16 @@ class Transformer(nn.Module):
         d_ff: int = 2048,
         dropout: float = 0.1,
         checkpoint_path: str = None,
+        use_attention_scaling: bool = True,
+        positional_encoding_type: str = "sinusoidal",
+        max_len: int = 5000,
     ) -> None:
         super().__init__()
         checkpoint = None
         if checkpoint_path is None:
             checkpoint_path = DEFAULT_CHECKPOINT_PATH
-        _download_checkpoint_if_needed(checkpoint_path)
+        if checkpoint_path:
+            _download_checkpoint_if_needed(checkpoint_path)
 
         if checkpoint_path is not None and os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -295,6 +330,9 @@ class Transformer(nn.Module):
             num_heads = model_config.get("num_heads", num_heads)
             d_ff = model_config.get("d_ff", d_ff)
             dropout = model_config.get("dropout", dropout)
+            use_attention_scaling = model_config.get("use_attention_scaling", use_attention_scaling)
+            positional_encoding_type = model_config.get("positional_encoding_type", positional_encoding_type)
+            max_len = model_config.get("max_len", max_len)
 
         self.src_vocab_size = src_vocab_size
         self.tgt_vocab_size = tgt_vocab_size
@@ -303,12 +341,20 @@ class Transformer(nn.Module):
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.dropout = dropout
+        self.use_attention_scaling = use_attention_scaling
+        self.positional_encoding_type = positional_encoding_type
+        self.max_len = max_len
 
         self.src_embed = nn.Embedding(src_vocab_size, d_model)
         self.tgt_embed = nn.Embedding(tgt_vocab_size, d_model)
-        self.positional_encoding = PositionalEncoding(d_model, dropout)
-        self.encoder = Encoder(EncoderLayer(d_model, num_heads, d_ff, dropout), N)
-        self.decoder = Decoder(DecoderLayer(d_model, num_heads, d_ff, dropout), N)
+        if positional_encoding_type == "learned":
+            self.positional_encoding = LearnedPositionalEncoding(d_model, dropout, max_len)
+        elif positional_encoding_type == "sinusoidal":
+            self.positional_encoding = PositionalEncoding(d_model, dropout, max_len)
+        else:
+            raise ValueError("positional_encoding_type must be 'sinusoidal' or 'learned'")
+        self.encoder = Encoder(EncoderLayer(d_model, num_heads, d_ff, dropout, use_attention_scaling), N)
+        self.decoder = Decoder(DecoderLayer(d_model, num_heads, d_ff, dropout, use_attention_scaling), N)
         self.generator = nn.Linear(d_model, tgt_vocab_size)
         self.model_config = {
             "src_vocab_size": src_vocab_size,
@@ -318,6 +364,9 @@ class Transformer(nn.Module):
             "num_heads": num_heads,
             "d_ff": d_ff,
             "dropout": dropout,
+            "use_attention_scaling": use_attention_scaling,
+            "positional_encoding_type": positional_encoding_type,
+            "max_len": max_len,
         }
         self._reset_parameters()
         self.src_tokenizer = _load_spacy_tokenizer()

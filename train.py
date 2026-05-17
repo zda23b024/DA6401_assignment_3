@@ -6,6 +6,7 @@ The public signatures in this file are kept stable for the autograder.
 
 import math
 import os
+import argparse
 from collections import Counter
 from typing import Optional
 
@@ -15,6 +16,15 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from model import Transformer, make_src_mask, make_tgt_mask
+
+
+EXPERIMENT_CONFIGS = {
+    "baseline": {},
+    "fixed_lr": {"use_noam": False, "optimizer_lr": 1e-4},
+    "no_scale": {"use_attention_scaling": False},
+    "learned_pos": {"positional_encoding_type": "learned"},
+    "no_smoothing": {"smoothing": 0.0},
+}
 
 
 class LabelSmoothingLoss(nn.Module):
@@ -58,14 +68,21 @@ def run_epoch(
     epoch_num: int = 0,
     is_train: bool = True,
     device: str = "cpu",
+    wandb_run=None,
+    log_grad_norm_steps: int = 0,
+    log_prediction_confidence: bool = False,
 ) -> float:
     """
     Run one epoch of training or evaluation.
     """
-    del epoch_num
     model.train(is_train)
     total_loss = 0.0
     total_tokens = 0
+    total_correct_confidence = 0.0
+    confidence_batches = 0
+    correct_tokens = 0
+    accuracy_tokens = 0
+    global_step = int(getattr(model, "_global_step", 0))
 
     for src, tgt in data_iter:
         src = src.to(device)
@@ -79,22 +96,71 @@ def run_epoch(
         with torch.set_grad_enabled(is_train):
             logits = model(src, tgt_input, src_mask, tgt_mask)
             loss = loss_fn(logits.reshape(-1, logits.size(-1)), tgt_y.reshape(-1))
+            with torch.no_grad():
+                non_pad_accuracy = tgt_y != getattr(loss_fn, "pad_idx", 1)
+                predictions = logits.argmax(dim=-1)
+                correct_tokens += ((predictions == tgt_y) & non_pad_accuracy).sum().item()
+                accuracy_tokens += non_pad_accuracy.sum().item()
+
+            if log_prediction_confidence:
+                with torch.no_grad():
+                    probs = F.softmax(logits, dim=-1)
+                    correct_probs = probs.gather(-1, tgt_y.unsqueeze(-1)).squeeze(-1)
+                    non_pad_conf = tgt_y != getattr(loss_fn, "pad_idx", 1)
+                    if non_pad_conf.any():
+                        total_correct_confidence += correct_probs[non_pad_conf].mean().item()
+                        confidence_batches += 1
 
             if is_train:
                 if optimizer is None:
                     raise ValueError("optimizer is required when is_train=True")
                 optimizer.zero_grad()
                 loss.backward()
+                global_step += 1
+                if wandb_run is not None and global_step <= log_grad_norm_steps:
+                    wandb_run.log(
+                        {
+                            "step": global_step,
+                            "grad_norm/q_weight": _grad_norm(model.encoder.layers[0].self_attn.w_q.weight),
+                            "grad_norm/k_weight": _grad_norm(model.encoder.layers[0].self_attn.w_k.weight),
+                        },
+                        step=global_step,
+                    )
                 optimizer.step()
                 if scheduler is not None:
                     scheduler.step()
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "step": global_step,
+                            "batch_train_loss": loss.item(),
+                            "learning_rate": optimizer.param_groups[0]["lr"],
+                        },
+                        step=global_step,
+                    )
 
         non_pad = (tgt_y != getattr(loss_fn, "pad_idx", 1)).sum().item()
         batch_tokens = max(non_pad, 1)
         total_loss += loss.item() * batch_tokens
         total_tokens += batch_tokens
 
+    model._global_step = global_step
+    if wandb_run is not None and log_prediction_confidence and confidence_batches:
+        split = "train" if is_train else "val"
+        metrics = {
+            f"{split}_prediction_confidence": total_correct_confidence / confidence_batches,
+            "epoch": epoch_num,
+        }
+        if accuracy_tokens:
+            metrics[f"{split}_token_accuracy"] = correct_tokens / accuracy_tokens
+        wandb_run.log(metrics)
     return total_loss / max(total_tokens, 1)
+
+
+def _grad_norm(param: torch.Tensor) -> float:
+    if param.grad is None:
+        return 0.0
+    return float(param.grad.detach().norm(2).item())
 
 
 def greedy_decode(
@@ -385,28 +451,111 @@ def load_checkpoint(
     return int(checkpoint.get("epoch", 0))
 
 
-def run_training_experiment() -> None:
-    """
-    Set up and run the full training experiment.
-    """
-    import wandb
-    from dataset import Multi30kDataset
-    from lr_scheduler import NoamScheduler
-
+def _build_config(args: argparse.Namespace) -> dict:
     config = {
+        "experiment_name": args.experiment,
         "batch_size": 64,
-        "num_epochs": 30,
+        "num_epochs": args.epochs,
         "d_model": 256,
         "N": 3,
         "num_heads": 4,
         "d_ff": 1024,
         "dropout": 0.1,
         "warmup_steps": 2000,
-        "lr": 1.0,
+        "optimizer_lr": 1.0,
         "smoothing": 0.1,
         "val_bleu_beam_size": 1,
+        "use_noam": True,
+        "use_attention_scaling": True,
+        "positional_encoding_type": "sinusoidal",
+        "log_grad_norm_steps": 1000,
+        "log_prediction_confidence": True,
+        "log_attention_maps": True,
     }
-    run = wandb.init(project="da6401-a3", config=config, mode=os.environ.get("WANDB_MODE", "disabled"))
+    config.update(EXPERIMENT_CONFIGS[args.experiment])
+    if args.epochs is not None:
+        config["num_epochs"] = args.epochs
+    return config
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train Transformer experiments for DA6401 Assignment 3.")
+    parser.add_argument(
+        "--experiment",
+        choices=sorted(EXPERIMENT_CONFIGS.keys()),
+        default="baseline",
+        help="W&B experiment/ablation to run.",
+    )
+    parser.add_argument("--epochs", type=int, default=15, help="Epochs for this experiment run.")
+    parser.add_argument("--project", type=str, default="da6401-a3", help="W&B project name.")
+    return parser.parse_args()
+
+
+def log_attention_heatmaps(model: Transformer, dataset, device: str, wandb_run, epoch: int) -> None:
+    if wandb_run is None:
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+        import wandb
+    except Exception:
+        return
+
+    model.eval()
+    src, _ = dataset[0]
+    src = src.unsqueeze(0).to(device)
+    src_mask = make_src_mask(src)
+
+    with torch.no_grad():
+        model.encode(src, src_mask)
+
+    attn = model.encoder.layers[-1].self_attn.attn_weights
+    if attn is None:
+        return
+
+    attn = attn[0].detach().cpu()
+    token_ids = src.squeeze(0).detach().cpu().tolist()
+    tokens = [_lookup_token(dataset.src_vocab, idx) for idx in token_ids]
+    num_heads = attn.size(0)
+    cols = min(4, num_heads)
+    rows = math.ceil(num_heads / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3.5 * rows), squeeze=False)
+
+    for head in range(num_heads):
+        ax = axes[head // cols][head % cols]
+        image = ax.imshow(attn[head].numpy(), aspect="auto", cmap="viridis")
+        ax.set_title(f"Head {head}")
+        ax.set_xticks(range(len(tokens)))
+        ax.set_xticklabels(tokens, rotation=90, fontsize=7)
+        ax.set_yticks(range(len(tokens)))
+        ax.set_yticklabels(tokens, fontsize=7)
+        fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+
+    for idx in range(num_heads, rows * cols):
+        axes[idx // cols][idx % cols].axis("off")
+
+    fig.tight_layout()
+    wandb_run.log({"attention_maps/last_encoder_layer": wandb.Image(fig), "epoch": epoch})
+    plt.close(fig)
+
+
+def run_training_experiment() -> None:
+    """
+    Set up and run the full training experiment.
+    """
+    args = _parse_args()
+
+    import wandb
+    from dataset import Multi30kDataset
+    from lr_scheduler import NoamScheduler
+
+    config = _build_config(args)
+    run = wandb.init(
+        project=args.project,
+        name=config["experiment_name"],
+        config=config,
+        mode=os.environ.get("WANDB_MODE", "disabled"),
+    )
     cfg = run.config
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -426,20 +575,48 @@ def run_training_experiment() -> None:
         num_heads=cfg.num_heads,
         d_ff=cfg.d_ff,
         dropout=cfg.dropout,
+        checkpoint_path="",
+        use_attention_scaling=cfg.use_attention_scaling,
+        positional_encoding_type=cfg.positional_encoding_type,
     ).to(device)
     model.src_vocab = train_dataset.src_vocab
     model.tgt_vocab = train_dataset.tgt_vocab
     model.src_tokenizer = train_dataset.src_tokenizer
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, betas=(0.9, 0.98), eps=1e-9)
-    scheduler = NoamScheduler(optimizer, d_model=cfg.d_model, warmup_steps=cfg.warmup_steps)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.optimizer_lr, betas=(0.9, 0.98), eps=1e-9)
+    scheduler = None
+    if cfg.use_noam:
+        scheduler = NoamScheduler(optimizer, d_model=cfg.d_model, warmup_steps=cfg.warmup_steps)
     loss_fn = LabelSmoothingLoss(len(train_dataset.tgt_vocab), train_dataset.tgt_vocab.stoi["<pad>"], cfg.smoothing)
 
     best_val_loss = float("inf")
     best_val_bleu = -float("inf")
     for epoch in range(cfg.num_epochs):
-        train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, True, device)
-        val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, False, device)
+        train_loss = run_epoch(
+            train_loader,
+            model,
+            loss_fn,
+            optimizer,
+            scheduler,
+            epoch,
+            True,
+            device,
+            wandb_run=run,
+            log_grad_norm_steps=cfg.log_grad_norm_steps,
+            log_prediction_confidence=cfg.log_prediction_confidence,
+        )
+        val_loss = run_epoch(
+            val_loader,
+            model,
+            loss_fn,
+            None,
+            None,
+            epoch,
+            False,
+            device,
+            wandb_run=run,
+            log_prediction_confidence=cfg.log_prediction_confidence,
+        )
         val_bleu = evaluate_bleu(
             model,
             val_loader,
@@ -449,11 +626,16 @@ def run_training_experiment() -> None:
         )
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            save_checkpoint(model, optimizer, scheduler, epoch, "best_loss_checkpoint.pt")
+            save_checkpoint(model, optimizer, scheduler, epoch, f"{cfg.experiment_name}_best_loss_checkpoint.pt")
+            if cfg.experiment_name == "baseline":
+                save_checkpoint(model, optimizer, scheduler, epoch, "best_loss_checkpoint.pt")
         if val_bleu > best_val_bleu:
             best_val_bleu = val_bleu
-            save_checkpoint(model, optimizer, scheduler, epoch, "checkpoint.pt")
-            save_checkpoint(model, optimizer, scheduler, epoch, "best_checkpoint.pt")
+            save_checkpoint(model, optimizer, scheduler, epoch, f"{cfg.experiment_name}_checkpoint.pt")
+            save_checkpoint(model, optimizer, scheduler, epoch, f"{cfg.experiment_name}_best_checkpoint.pt")
+            if cfg.experiment_name == "baseline":
+                save_checkpoint(model, optimizer, scheduler, epoch, "checkpoint.pt")
+                save_checkpoint(model, optimizer, scheduler, epoch, "best_checkpoint.pt")
         wandb.log(
             {
                 "epoch": epoch,
@@ -468,8 +650,10 @@ def run_training_experiment() -> None:
             f"Epoch {epoch+1}/{cfg.num_epochs}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, val_bleu={val_bleu:.2f}, best_val_bleu={best_val_bleu:.2f}",
             flush=True,
         )
+        if cfg.log_attention_maps and epoch == cfg.num_epochs - 1:
+            log_attention_heatmaps(model, val_dataset, device, run, epoch)
 
-    load_checkpoint("best_checkpoint.pt", model)
+    load_checkpoint(f"{cfg.experiment_name}_best_checkpoint.pt", model)
     bleu = evaluate_bleu(model, test_loader, train_dataset.tgt_vocab, device, beam_size=cfg.val_bleu_beam_size)
     wandb.log({"test_bleu": bleu})
     print(f"Final test BLEU: {bleu:.2f}", flush=True)

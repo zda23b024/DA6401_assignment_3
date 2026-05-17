@@ -34,3 +34,17 @@ For final submission, make the trained checkpoint available during construction 
 
 The checkpoint should include `model_state_dict`, `model_config`, `src_vocab_itos`, and
 `tgt_vocab_itos`; `train.py::save_checkpoint` already saves this format.
+
+## W&B Experiments
+
+Run the same training entry point with different experiment names:
+
+```bash
+python train.py --experiment baseline --epochs 15
+python train.py --experiment fixed_lr --epochs 15
+python train.py --experiment no_scale --epochs 15
+python train.py --experiment learned_pos --epochs 15
+python train.py --experiment no_smoothing --epochs 15
+```
+
+Set `WANDB_MODE=online` before running to log report plots.
