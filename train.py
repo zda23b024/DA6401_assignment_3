@@ -394,17 +394,17 @@ def run_training_experiment() -> None:
     from lr_scheduler import NoamScheduler
 
     config = {
-        "batch_size": 32,
+        "batch_size": 64,
         "num_epochs": 30,
-        "d_model": 512,
-        "N": 6,
-        "num_heads": 8,
-        "d_ff": 2048,
+        "d_model": 256,
+        "N": 3,
+        "num_heads": 4,
+        "d_ff": 1024,
         "dropout": 0.1,
-        "warmup_steps": 4000,
+        "warmup_steps": 2000,
         "lr": 1.0,
         "smoothing": 0.1,
-        "val_bleu_beam_size": 8,
+        "val_bleu_beam_size": 1,
     }
     run = wandb.init(project="da6401-a3", config=config, mode=os.environ.get("WANDB_MODE", "disabled"))
     cfg = run.config
