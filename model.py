@@ -350,8 +350,8 @@ class Transformer(nn.Module):
             memory = self.encode(src_tensor, src_mask_tensor)
             beam = [([tgt_sos_idx], 0.0, False)]
             beam_size = 5
-            alpha = 0.7
-            min_len = 2
+            alpha = 0.6
+            min_len = 3
 
             def creates_repeated_ngram(seq: list[int], next_idx: int, n: int = 3) -> bool:
                 if len(seq) + 1 < 2 * n:

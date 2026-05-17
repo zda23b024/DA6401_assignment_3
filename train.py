@@ -137,8 +137,8 @@ def beam_search_decode(
     end_symbol: int,
     device: str = "cpu",
     beam_size: int = 5,
-    length_norm_alpha: float = 0.7,
-    min_len: int = 2,
+    length_norm_alpha: float = 0.6,
+    min_len: int = 3,
     unk_symbol: Optional[int] = None,
     pad_symbol: Optional[int] = None,
 ) -> torch.Tensor:
@@ -295,6 +295,8 @@ def evaluate_bleu(
     device: str = "cpu",
     max_len: int = 100,
     beam_size: int = 5,
+    length_norm_alpha: float = 0.6,
+    min_len: int = 3,
 ) -> float:
     """
     Evaluate translation quality with corpus-level BLEU score.
@@ -323,6 +325,8 @@ def evaluate_bleu(
                     end_symbol,
                     device=device,
                     beam_size=beam_size,
+                    length_norm_alpha=length_norm_alpha,
+                    min_len=min_len,
                 )
             else:
                 pred = greedy_decode(model, src_i, src_mask, max_len, start_symbol, end_symbol, device=device)
