@@ -138,6 +138,9 @@ def beam_search_decode(
     device: str = "cpu",
     beam_size: int = 5,
     length_norm_alpha: float = 0.7,
+    min_len: int = 2,
+    unk_symbol: int = 0,
+    pad_symbol: int = 1,
 ) -> torch.Tensor:
     """
     Generate a translation using beam search to improve BLEU quality.
@@ -149,6 +152,15 @@ def beam_search_decode(
         memory = model.encode(src, src_mask)
 
         beam = [([start_symbol], 0.0, False)]
+
+        def creates_repeated_ngram(seq: list[int], next_idx: int, n: int = 3) -> bool:
+            if len(seq) + 1 < 2 * n:
+                return False
+            candidate = seq + [next_idx]
+            ngram = tuple(candidate[-n:])
+            history = {tuple(candidate[i : i + n]) for i in range(len(candidate) - n)}
+            return ngram in history
+
         for _ in range(max_len - 1):
             candidates = []
             for seq, score, finished in beam:
@@ -160,9 +172,17 @@ def beam_search_decode(
                 tgt_mask = make_tgt_mask(ys).to(device)
                 logits = model.decode(memory, src_mask, ys, tgt_mask)
                 log_probs = F.log_softmax(logits[:, -1, :], dim=-1).squeeze(0)
+                for blocked_idx in {pad_symbol, unk_symbol, start_symbol}:
+                    if 0 <= blocked_idx < log_probs.size(-1):
+                        log_probs[blocked_idx] = -float("inf")
+                if len(seq) - 1 < min_len and 0 <= end_symbol < log_probs.size(-1):
+                    log_probs[end_symbol] = -float("inf")
+
                 topk_log_probs, topk_indices = log_probs.topk(min(beam_size, log_probs.size(-1)))
 
                 for log_prob, idx in zip(topk_log_probs.tolist(), topk_indices.tolist()):
+                    if not math.isfinite(log_prob) or creates_repeated_ngram(seq, idx):
+                        continue
                     new_seq = seq + [idx]
                     new_score = score + log_prob
                     candidates.append((new_seq, new_score, idx == end_symbol))
@@ -353,6 +373,7 @@ def run_training_experiment() -> None:
         "warmup_steps": 4000,
         "lr": 1.0,
         "smoothing": 0.1,
+        "val_bleu_beam_size": 1,
     }
     run = wandb.init(project="da6401-a3", config=config, mode=os.environ.get("WANDB_MODE", "disabled"))
     cfg = run.config
@@ -383,12 +404,37 @@ def run_training_experiment() -> None:
     scheduler = NoamScheduler(optimizer, d_model=cfg.d_model, warmup_steps=cfg.warmup_steps)
     loss_fn = LabelSmoothingLoss(len(train_dataset.tgt_vocab), train_dataset.tgt_vocab.stoi["<pad>"], cfg.smoothing)
 
+    best_val_loss = float("inf")
+    best_val_bleu = -float("inf")
     for epoch in range(cfg.num_epochs):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, True, device)
         val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, False, device)
-        save_checkpoint(model, optimizer, scheduler, epoch)
-        wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        val_bleu = evaluate_bleu(
+            model,
+            val_loader,
+            train_dataset.tgt_vocab,
+            device=device,
+            beam_size=cfg.val_bleu_beam_size,
+        )
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(model, optimizer, scheduler, epoch, "best_loss_checkpoint.pt")
+        if val_bleu > best_val_bleu:
+            best_val_bleu = val_bleu
+            save_checkpoint(model, optimizer, scheduler, epoch, "checkpoint.pt")
+            save_checkpoint(model, optimizer, scheduler, epoch, "best_checkpoint.pt")
+        wandb.log(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_bleu": val_bleu,
+                "best_val_loss": best_val_loss,
+                "best_val_bleu": best_val_bleu,
+            }
+        )
 
+    load_checkpoint("best_checkpoint.pt", model)
     bleu = evaluate_bleu(model, test_loader, train_dataset.tgt_vocab, device)
     wandb.log({"test_bleu": bleu})
     run.finish()

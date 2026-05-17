@@ -8,7 +8,6 @@ import copy
 import math
 import os
 import re
-from importlib import import_module
 from typing import Optional, Tuple
 
 import torch
@@ -223,8 +222,6 @@ class Decoder(nn.Module):
 class Transformer(nn.Module):
     """Full encoder-decoder Transformer for sequence-to-sequence tasks."""
 
-    _translation_memory: Optional[dict[str, str]] = None
-
     def __init__(
         self,
         src_vocab_size: int = 10000,
@@ -327,52 +324,10 @@ class Transformer(nn.Module):
         memory = self.encode(src, src_mask)
         return self.decode(memory, src_mask, tgt, tgt_mask)
 
-
-    @staticmethod
-    def _normalize_memory_key(text: str) -> str:
-        text = text.lower().strip()
-        text = re.sub(r"\s+", " ", text)
-        return text
-
-    @classmethod
-    def _build_translation_memory(cls) -> dict[str, str]:
-        if cls._translation_memory is not None:
-            return cls._translation_memory
-
-        memory: dict[str, str] = {}
-        try:
-            load_dataset = import_module("datasets").load_dataset
-            for split in ("train", "validation", "test"):
-                dataset = load_dataset("bentrevett/multi30k", split=split)
-                for example in dataset:
-                    if "de" in example and "en" in example:
-                        src_text, tgt_text = example["de"], example["en"]
-                    elif "translation" in example:
-                        translation = example["translation"]
-                        src_text, tgt_text = translation["de"], translation["en"]
-                    else:
-                        continue
-                    memory[cls._normalize_memory_key(src_text)] = tgt_text.lower()
-        except Exception:
-            pass
-
-        cls._translation_memory = memory
-        return memory
-
-    @classmethod
-    def _translation_memory_infer(cls, src_sentence: str) -> Optional[str]:
-        memory = cls._build_translation_memory()
-        return memory.get(cls._normalize_memory_key(src_sentence))
-
     def infer(self, src_sentence: str) -> str:
         """
         Translate a German sentence to English using attached vocab/tokenizer attributes.
         """
-        # COMMENT OUT OR REMOVE THESE 3 LINES:
-        # memory_translation = self._translation_memory_infer(src_sentence)
-        # if memory_translation is not None:
-        #     return memory_translation
-            
         if not all(hasattr(self, name) for name in ("src_vocab", "tgt_vocab", "src_tokenizer")):
             return self._rule_based_infer(src_sentence)
 
@@ -396,6 +351,16 @@ class Transformer(nn.Module):
             beam = [([tgt_sos_idx], 0.0, False)]
             beam_size = 5
             alpha = 0.7
+            min_len = 2
+
+            def creates_repeated_ngram(seq: list[int], next_idx: int, n: int = 3) -> bool:
+                if len(seq) + 1 < 2 * n:
+                    return False
+                candidate = seq + [next_idx]
+                ngram = tuple(candidate[-n:])
+                history = {tuple(candidate[i : i + n]) for i in range(len(candidate) - n)}
+                return ngram in history
+
             for _ in range(100):
                 candidates = []
                 for seq, score, finished in beam:
@@ -406,8 +371,15 @@ class Transformer(nn.Module):
                     tgt_mask = make_tgt_mask(ys)
                     logits = self.decode(memory, src_mask_tensor, ys, tgt_mask)
                     log_probs = F.log_softmax(logits[:, -1, :], dim=-1).squeeze(0)
+                    for blocked_idx in {tgt_stoi.get("<pad>", 1), tgt_stoi.get("<unk>", 0), tgt_sos_idx}:
+                        if 0 <= blocked_idx < log_probs.size(-1):
+                            log_probs[blocked_idx] = -float("inf")
+                    if len(seq) - 1 < min_len and 0 <= tgt_eos_idx < log_probs.size(-1):
+                        log_probs[tgt_eos_idx] = -float("inf")
                     topk_log_probs, topk_indices = log_probs.topk(min(beam_size, log_probs.size(-1)))
                     for log_prob, idx in zip(topk_log_probs.tolist(), topk_indices.tolist()):
+                        if not math.isfinite(log_prob) or creates_repeated_ngram(seq, idx):
+                            continue
                         new_seq = seq + [idx]
                         candidates.append((new_seq, score + log_prob, idx == tgt_eos_idx))
 
